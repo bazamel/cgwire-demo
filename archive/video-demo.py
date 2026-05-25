@@ -250,24 +250,24 @@ for shot in shots:
     sb_due   = add_working_days(sb_start, SHOT_TASK_DURATION)
     gazu.task.new_task(
         shot, storyboard,
-        start_date=date_str(sb_start),
-        due_date=date_str(sb_due)
+        # start_date=date_str(sb_start),
+        # due_date=date_str(sb_due)
     )
 
     anim_start = add_working_days(sb_due, 1)
     anim_due   = add_working_days(anim_start, SHOT_TASK_DURATION)
     animation_task = gazu.task.new_task(
         shot, animation,
-        start_date=date_str(anim_start),
-        due_date=date_str(anim_due)
+        # start_date=date_str(anim_start),
+        # due_date=date_str(anim_due)
     )
 
     render_start = add_working_days(anim_due, 1)
     render_due   = add_working_days(render_start, SHOT_TASK_DURATION)
     gazu.task.new_task(
         shot, render,
-        start_date=date_str(render_start),
-        due_date=date_str(render_due)
+        # start_date=date_str(render_start),
+        # due_date=date_str(render_due)
     )
 
     comp_start = add_working_days(render_due, 1)
@@ -463,7 +463,7 @@ for (index, asset) in enumerate(assets):
        os.path.exists(file_paths_modeling[index]):
         comment = gazu.task.add_comment(
             task_modeling, wfa, "New preview",
-            duration=ASSET_TASK_DURATION * 8 * 3600  # seconds
+            # duration=ASSET_TASK_DURATION * 8 * 3600
         )
         preview_file = gazu.task.add_preview(
             task_modeling, comment, file_paths_modeling[index]
@@ -471,7 +471,7 @@ for (index, asset) in enumerate(assets):
         gazu.task.set_main_preview(preview_file)
         comment = gazu.task.add_comment(
             task_modeling, done, "Done",
-            duration=0
+            # duration=0
         )
     else:
         # No preview file — leave some as WFA to populate that status
@@ -481,7 +481,7 @@ for (index, asset) in enumerate(assets):
         )
 
     task_setup = gazu.task.get_task_by_entity(asset, setup)
-    gazu.task.add_comment(task_setup, wip, "Getting started", duration=0)
+    gazu.task.add_comment(task_setup, wip, "Getting started")
 
 # Shot previews & statuses
 for (index, shot) in enumerate(shots):
@@ -491,18 +491,18 @@ for (index, shot) in enumerate(shots):
     if index < len(file_paths_sb) and os.path.exists(file_paths_sb[index]):
         task_sb = gazu.task.get_task_by_entity(shot, storyboard)
         comment = gazu.task.add_comment(
-            task_sb, wfa, "New preview", duration=time_spent
+            task_sb, wfa, "New preview"
         )
         preview_file = gazu.task.add_preview(task_sb, comment, file_paths_sb[index])
         gazu.task.set_main_preview(preview_file)
-        comment = gazu.task.add_comment(task_sb, done, "Done", duration=0)
+        comment = gazu.task.add_comment(task_sb, done, "Done")
 
     # Animation
     task_animation = gazu.task.get_task_by_entity(shot, animation)
     if index < len(file_paths_animation) and \
        os.path.exists(file_paths_animation[index]):
         comment = gazu.task.add_comment(
-            task_animation, wfa, "New preview", duration=time_spent
+            task_animation, wfa, "New preview"
         )
         preview_file = gazu.task.add_preview(
             task_animation, comment, file_paths_animation[index]
@@ -510,19 +510,19 @@ for (index, shot) in enumerate(shots):
         gazu.task.set_main_preview(preview_file)
         # Every 3rd shot stays as WFA instead of being marked Done
         if index % 3 != 2:
-            gazu.task.add_comment(task_animation, done, "Done", duration=0)
+            gazu.task.add_comment(task_animation, done, "Done")
     elif index < len(movie_file_paths_animation) and \
          os.path.exists(movie_file_paths_animation[index]):
         comment = gazu.task.add_comment(
-            task_animation, wfa, "New preview", duration=time_spent
+            task_animation, wfa, "New preview"
         )
         gazu.task.add_preview(task_animation, comment, movie_file_paths_animation[index])
         if index % 3 != 2:
-            gazu.task.add_comment(task_animation, done, "Done", duration=0)
+            gazu.task.add_comment(task_animation, done, "Done")
     else:
         # No file — set as WFA with time logged
         gazu.task.add_comment(
-            task_animation, wfa, "Ready for review", duration=time_spent
+            task_animation, wfa, "Ready for review"
         )
 
     # Render
@@ -530,23 +530,23 @@ for (index, shot) in enumerate(shots):
     if index < len(file_paths_render) and \
        os.path.exists(file_paths_render[index]):
         comment = gazu.task.add_comment(
-            task_render, wfa, "New preview", duration=time_spent
+            task_render, wfa, "New preview"
         )
         preview_file = gazu.task.add_preview(
             task_render, comment, file_paths_render[index]
         )
         gazu.task.set_main_preview(preview_file)
         if index % 4 != 3:
-            gazu.task.add_comment(task_render, done, "Done", duration=0)
+            gazu.task.add_comment(task_render, done, "Done")
     elif index < len(movie_file_paths_render) and \
          os.path.exists(movie_file_paths_render[index]):
         comment = gazu.task.add_comment(
-            task_render, wfa, "New preview", duration=time_spent
+            task_render, wfa, "New preview"
         )
         gazu.task.add_preview(task_render, comment, movie_file_paths_render[index])
         if index % 4 != 3:
-            gazu.task.add_comment(task_render, done, "Done", duration=0)
+            gazu.task.add_comment(task_render, done, "Done")
     else:
         gazu.task.add_comment(
-            task_render, wfa, "Ready for review", duration=time_spent
+            task_render, wfa, "Ready for review"
         )

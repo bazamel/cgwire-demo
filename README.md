@@ -35,3 +35,9 @@ git clone git@github.com:cgwire/cgwire-demo.git
 cd cgwire-demo
 python demo.py
 ```
+
+# New Modular Script
+
+```bash
+python generate.py
+```
