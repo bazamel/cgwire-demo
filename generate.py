@@ -216,6 +216,147 @@ def _shot_index(shot_name: str) -> int:
     except (ValueError, IndexError):
         return 0
 
+file_paths_modeling = [
+    "fixtures/th_assets/lama.png",
+    "fixtures/th_assets/ep01/oti.png",
+    "fixtures/th_assets/ep01/pingoo.png",
+    "fixtures/th_assets/ep01/mine.png",
+    "fixtures/th_assets/ep01/pool.png",
+    "fixtures/th_assets/ep01/railroad.jpg",
+    "fixtures/th_assets/ep01/oil_machine.png",
+    "fixtures/th_assets/ep01/smoke.png",
+    "fixtures/th_assets/ep01/wind.png",
+    "fixtures/th_assets/ep01/berry.png",
+    "fixtures/th_assets/ep01/flower.png",
+    "fixtures/th_assets/ep01/cart.png",
+    "fixtures/th_assets/ep01/train.png",
+]
+
+file_paths_sb = [
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH01.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH02.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH03.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH04.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH05.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH06.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH07.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH08.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH09.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH10.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH11.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH01.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH02.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH03.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH04.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH05.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH06.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH07.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH08.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH09.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH10.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH11.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH01.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH02.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH03.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH04.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH05.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH06.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH07.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH08.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH09.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH10.png",
+    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH11.png",
+]
+
+file_paths_animation = [
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH01.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH02.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH03.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH04.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH05.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH06.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH07.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH08.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH09.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH10.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH11.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH01.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH02.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH03.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH04.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH05.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH06.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH07.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH08.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH09.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH10.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH11.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH01.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH02.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH03.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH04.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH05.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH06.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH07.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH08.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH09.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH10.png",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH11.png",
+]
+
+file_paths_render = [
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH01.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH02.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH03.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH04.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH05.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH06.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH07.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH08.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH09.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH10.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH11.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH01.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH02.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH03.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH04.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH05.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH06.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH07.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH08.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH09.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH10.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH11.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH01.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH02.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH03.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH04.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH05.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH06.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH07.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH08.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH09.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH10.png",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH11.png",
+]
+
+movie_file_paths_animation = [
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH01.mp4",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH02.mp4",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH03.mp4",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH04.mp4",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH05.mp4",
+    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH06.mp4",
+]
+
+movie_file_paths_render = [
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH01.mp4",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH02.mp4",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH03.mp4",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH04.mp4",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH05.mp4",
+    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH06.mp4",
+]
 
 def generateTask(shot, task_type, task_status):
     task   = gazu.task.new_task(shot, task_type)
@@ -263,11 +404,40 @@ def generateTask(shot, task_type, task_status):
     if task_status == wip:
         return
 
+    # ── Resolve preview file path ─────────────────────────────────────────────
+    task_name = task_type["name"]
+    shot_index = _shot_index(shot["name"])
+    preview_path = None
+
+    # if task_name == "Modeling":
+    #     preview_path = file_paths_modeling[shot_index % len(file_paths_modeling)]
+    elif task_name == "Storyboard":
+        preview_path = file_paths_sb[shot_index % len(file_paths_sb)]
+    elif task_name == "Animation":
+        movie_paths = movie_file_paths_animation
+        still_paths = file_paths_animation
+        if shot_index < len(movie_paths):
+            preview_path = movie_paths[shot_index]
+        else:
+            preview_path = still_paths[shot_index % len(still_paths)]
+    elif task_name == "Rendering":
+        movie_paths = movie_file_paths_render
+        still_paths = file_paths_render
+        if shot_index < len(movie_paths):
+            preview_path = movie_paths[shot_index]
+        else:
+            preview_path = still_paths[shot_index % len(still_paths)]
+    # ─────────────────────────────────────────────────────────────────────────
+
     # WIP → WFA
-    gazu.task.add_comment(
+    wfa_comment = gazu.task.add_comment(
         task, wfa, "Ready for approval",
         created_at=_task_datetime(start, due, 0.75, jitter_minutes=120),
     )
+
+    if preview_path:
+        preview_file = gazu.task.add_preview(task, wfa_comment, preview_path)
+        gazu.task.set_main_preview(preview_file)
 
     if task_status == wfa:
         return
