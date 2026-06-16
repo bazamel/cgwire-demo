@@ -12,6 +12,7 @@ gazu.set_host("http://localhost/api")
 gazu.log_in("admin@example.com", "mysecretpassword")
 
 persons = []
+artists = []
 projects = []
 episodes = []
 sequences = []
@@ -52,7 +53,7 @@ def generatePeople():
             "last_name": "Byrd",
             "email": "michael@cg-wire.com",
             "phone": "+33 6 32 45 12 45",
-            "role": "user",
+            "role": "vendor",
             "name": "michael"
         },
         {
@@ -60,7 +61,7 @@ def generatePeople():
             "last_name": "Kennedy",
             "email": "ann@cg-wire.com",
             "phone": "+33 6 32 45 12 45",
-            "role": "user",
+            "role": "supervisor",
             "name": "ann"
         },
         {
@@ -68,7 +69,7 @@ def generatePeople():
             "last_name": "Mason",
             "email": "brennan@cg-wire.com",
             "phone": "+33 6 43 42 13 21",
-            "role": "user",
+            "role": "manager",
             "name": "brennan"
         },
         {
@@ -88,6 +89,14 @@ def generatePeople():
             "name": "rachel"
         },
         {
+            "first_name": "Bob",
+            "last_name": "Dylan",
+            "email": "bob@cg-wire.com",
+            "phone": "+33 6 92 38 91 23",
+            "role": "client",
+            "name": "bob"
+        },
+        {
             "first_name": "Frank",
             "last_name": "Rousseau",
             "email": "frank@cg-wire.com",
@@ -103,10 +112,15 @@ def generatePeople():
             person["last_name"],
             person["email"],
             person["phone"],
-            person["role"]
+            person["role"],
+            "",
+            None,
+            "mysecretpassword"
         )
         gazu.person.set_avatar(personfull, "fixtures/fake_user/%s.png" % person["name"])
         persons.append(personfull)
+        if person["role"] == "user" or person["role"] == "vendor":
+            artists.append(personfull)
 
 def generateProductions(size):
     for i in range(size):
@@ -360,7 +374,7 @@ movie_file_paths_render = [
 
 def generateTask(shot, task_type, task_status):
     task   = gazu.task.new_task(shot, task_type)
-    artist = random.choice(persons)
+    artist = random.choice(artists)
 
     shot_offset = timedelta(days=_shot_index(shot["name"]) * SHOT_INTERVAL_DAYS)
 
@@ -369,6 +383,7 @@ def generateTask(shot, task_type, task_status):
         start = PROJECT_START + shot_offset + timedelta(days=schedule["start_offset"])
         due   = start + timedelta(days=schedule["duration"])
         task["start_date"] = start.strftime("%Y-%m-%d")
+        task["real_start_date"] = task["start_date"]
         task["due_date"]   = due.strftime("%Y-%m-%d")
         task["created_at"]   = start.strftime("%Y-%m-%d")
         task["updated_at"]   = due.strftime("%Y-%m-%d")
@@ -379,27 +394,39 @@ def generateTask(shot, task_type, task_status):
     else:
         start = PROJECT_START + shot_offset
         due   = start + timedelta(days=30)
-
-    gazu.task.assign_task(task, artist)
+    
+    gazu.client.put(
+        f"/actions/persons/{artist['id']}/assign",
+        {"task_ids": [task["id"]]}  # note: list, not bare string
+    )
 
     # ── Timesheet generation ──────────────────────────────────────────────────
     _generate_timesheets(task, artist, start, due)
     # ─────────────────────────────────────────────────────────────────────────
 
+    timestamp = _task_datetime(start, due, 0.0, jitter_minutes=60)
+
     # All tasks start at TODO
-    gazu.task.add_comment(
+    comment = gazu.task.add_comment(
         task, todo, "Task created",
-        created_at=_task_datetime(start, due, 0.0, jitter_minutes=60),
+        created_at=timestamp,
+        # updated_at=timestamp,
     )
+    comment["updated_at"] = timestamp
+    gazu.task.update_comment(comment)
 
     if task_status == todo:
         return
 
+    timestamp = _task_datetime(start, due, 0.25, jitter_minutes=120)
     # TODO → WIP
-    gazu.task.add_comment(
+    comment = gazu.task.add_comment(
         task, wip, "Started work",
-        created_at=_task_datetime(start, due, 0.25, jitter_minutes=120),
+        created_at=timestamp,
+        # updated_at=timestamp,
     )
+    comment["updated_at"] = timestamp
+    gazu.task.update_comment(comment)
 
     if task_status == wip:
         return
@@ -411,7 +438,7 @@ def generateTask(shot, task_type, task_status):
 
     # if task_name == "Modeling":
     #     preview_path = file_paths_modeling[shot_index % len(file_paths_modeling)]
-    elif task_name == "Storyboard":
+    if task_name == "Storyboard":
         preview_path = file_paths_sb[shot_index % len(file_paths_sb)]
     elif task_name == "Animation":
         movie_paths = movie_file_paths_animation
@@ -429,11 +456,15 @@ def generateTask(shot, task_type, task_status):
             preview_path = still_paths[shot_index % len(still_paths)]
     # ─────────────────────────────────────────────────────────────────────────
 
+    timestamp = _task_datetime(start, due, 0.75, jitter_minutes=120)
     # WIP → WFA
     wfa_comment = gazu.task.add_comment(
         task, wfa, "Ready for approval",
-        created_at=_task_datetime(start, due, 0.75, jitter_minutes=120),
+        created_at=timestamp,
+        # updated_at=timestamp,
     )
+    wfa_comment["updated_at"] = timestamp
+    gazu.task.update_comment(wfa_comment)
 
     if preview_path:
         preview_file = gazu.task.add_preview(task, wfa_comment, preview_path)
@@ -442,19 +473,30 @@ def generateTask(shot, task_type, task_status):
     if task_status == wfa:
         return
 
+    timestamp = _task_datetime(start, due, 0.85, jitter_minutes=60)
     # WFA → Retake  ← frontier is retake, stop here
     if task_status == retake:
-        gazu.task.add_comment(
+        comment = gazu.task.add_comment(
             task, retake, "Changes requested",
-            created_at=_task_datetime(start, due, 0.85, jitter_minutes=60),
+            created_at=timestamp,
+            # updated_at=timestamp,
         )
+        comment["updated_at"] = timestamp
+        gazu.task.update_comment(comment)
         return
 
+    timestamp = _task_datetime(start, due, 1.0, jitter_minutes=0)
     # WFA → Done
-    gazu.task.add_comment(
+    comment = gazu.task.add_comment(
         task, done, "Approved",
-        created_at=_task_datetime(start, due, 1.0, jitter_minutes=0),
+        created_at=timestamp,
+        # updated_at=timestamp,
     )
+    comment["updated_at"] = timestamp
+    gazu.task.update_comment(comment)
+    task = gazu.task.get_task(task['id'])
+    task['done_date'] = timestamp
+    gazu.task.update_task(task)
 
 
 def _generate_timesheets(task, artist, start: datetime, due: datetime) -> None:
@@ -582,6 +624,26 @@ def generateTasks():
             status = cascade[task_type["name"]]
             generateTask(shot, task_type, status)
 
+def generateBudget():
+    for i in range(len(projects)):
+        project = projects[i]
+        budget = gazu.project.create_budget(project, "Production Budget", "Labor, hardware, and license costs.", "USD", PROJECT_START, PROJECT_START + timedelta(days=180), 2000000)
+
+        dep = gazu.person.get_department_by_name("Animation")
+
+        for i in range(len(persons)):
+            person = persons[i]
+
+            gazu.client.post(f"data/projects/{project['id']}/budgets/{budget['id']}/entries", {
+                "budget_id": budget['id'],
+                "department_id": dep['id'],
+                "person_id": person['id'],
+                "start_date": "2026-06-01",
+                "months_duration": "1",
+                "daily_salary": "500",
+                "position": "artist",
+                "seniority": "mid",
+            })
 
 generatePeople()
 generateProductions(1)
@@ -590,3 +652,4 @@ generateEpisodes(1)
 generateSequences(1)
 generateShots(10)
 generateTasks()
+generateBudget()
