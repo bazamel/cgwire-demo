@@ -1,6 +1,9 @@
 import os
+import math
 import random
 import gazu
+import requests
+import tempfile
 from datetime import date, datetime, timedelta
 
 import random
@@ -10,6 +13,9 @@ fake = Faker()
 
 gazu.set_host("http://localhost/api")
 gazu.log_in("admin@example.com", "mysecretpassword")
+
+AVATAR_API_URL = "https://i.pravatar.cc/300"  # random fake avatar per request
+PASSWORD = "mysecretpassword"
 
 persons = []
 artists = []
@@ -28,99 +34,141 @@ _artist_day_budget: dict[tuple[str, str], int] = {}
 MAX_DAILY_MINUTES = 720  # 12 hours
 
 
-def generatePeople():
+def _download_avatar(seed):
+    """Download a random fake avatar image and return the local file path."""
+    response = requests.get(f"{AVATAR_API_URL}?u={seed}", timeout=10)
+    response.raise_for_status()
+ 
+    tmp_file = tempfile.NamedTemporaryFile(
+        suffix=".png", prefix="avatar_", delete=False
+    )
+    tmp_file.write(response.content)
+    tmp_file.close()
+    return tmp_file.name
+ 
+ 
+def _create_person(role, department=None):
+    """Generate a fake person, create it in Kitsu, set its avatar, and
+    optionally attach it to a department."""
+    first_name = fake.first_name()
+    last_name = fake.last_name()
+    full_name = f"{first_name} {last_name}"
+    email = f"{first_name.lower()}.{last_name.lower()}.{fake.unique.random_int(min=1000, max=99999)}@cg-wire.com"
+    phone = "+33 6 82 38 19 08"
+ 
+    try:
+        person = gazu.person.new_person(
+            first_name,
+            last_name,
+            email,
+            phone,
+            role,
+            "",
+            None,
+            PASSWORD,
+        )
+
+        person['position'] = "artist"
+        person['daily_salary'] = "500"
+
+        if role == 'supervisor' or role == "manager":
+            person['position'] = "lead"
+
+        if role == 'vendor':
+            person['contract_type'] = 'freelance'
+
+        person = gazu.person.update_person(person)
+
+    except gazu.exception.ParameterException as exc:
+        # Surface the actual server message instead of the opaque
+        # ('data/persons', True) repr, and skip this person rather than
+        # aborting the whole generation run.
+        message = exc.args[1] if len(exc.args) > 1 else str(exc)
+        print(f"Skipping {full_name} <{email}>: server rejected payload: {message}")
+        return None
+ 
+    avatar_path = None
+    # gazu.person.set_avatar(person, "fixtures/fake_user/alicia.png")
+    try:
+        avatar_path = _download_avatar(person["id"])
+    except requests.RequestException as exc:
+        print(f"Could not fetch avatar for {full_name}: {exc}")
+    finally:
+        if avatar_path and os.path.exists(avatar_path):
+            os.remove(avatar_path)
+ 
+    if department is not None:
+        try:
+            gazu.person.add_person_to_department(person, department)
+        except Exception as exc:
+            print(
+                f"Could not add {full_name} to department "
+                f"{department.get('name', department)}: {exc}"
+            )
+ 
+    persons.append(person)
+    if role in ("user", "vendor"):
+        artists.append(person)
+ 
+    return person
+
+def generatePeople(n_per_department=10):
+    """Generate fake people for the studio.
+ 
+    - Kitsu stays the single admin user.
+    - Two generic clients are created.
+    - For each existing department, `n_per_department` people are created:
+        * 1 supervisor
+        * 1 manager (producer)
+        * 20% of the remaining headcount as vendors
+        * the rest as artists ("user" role), assigned to that department
+    """
+    # --- Admin: keep Kitsu as the one and only admin user ---
     admin = gazu.person.get_person_by_email("admin@example.com")
-
+ 
     gazu.person.set_avatar(admin, "fixtures/fake_user/kitsu.png")
-
+ 
     admin["first_name"] = "Kitsu"
     admin["last_name"] = ""
     admin["full_name"] = "Kitsu"
-
-    gazu.person.update_person({"id": admin["id"], "full_name": admin["full_name"], "first_name": admin["first_name"], "last_name": admin["last_name"]})
-
-    data = [
+ 
+    gazu.person.update_person(
         {
-            "first_name": "Alicia",
-            "last_name": "Cooper",
-            "email": "alicia@cg-wire.com",
-            "phone": "+33 6 82 38 19 08",
-            "role": "user",
-            "name": "alicia"
-        },
-        {
-            "first_name": "Michael",
-            "last_name": "Byrd",
-            "email": "michael@cg-wire.com",
-            "phone": "+33 6 32 45 12 45",
-            "role": "vendor",
-            "name": "michael"
-        },
-        {
-            "first_name": "Ann",
-            "last_name": "Kennedy",
-            "email": "ann@cg-wire.com",
-            "phone": "+33 6 32 45 12 45",
-            "role": "supervisor",
-            "name": "ann"
-        },
-        {
-            "first_name": "Brennan",
-            "last_name": "Mason",
-            "email": "brennan@cg-wire.com",
-            "phone": "+33 6 43 42 13 21",
-            "role": "manager",
-            "name": "brennan"
-        },
-        {
-            "first_name": "David",
-            "last_name": "Penna",
-            "email": "david@cg-wire.com",
-            "phone": "+33 6 08 98 92 12",
-            "role": "user",
-            "name": "david"
-        },
-        {
-            "first_name": "Rachel",
-            "last_name": "Shelton",
-            "email": "rachel@cg-wire.com",
-            "phone": "+33 6 92 38 91 23",
-            "role": "user",
-            "name": "rachel"
-        },
-        {
-            "first_name": "Bob",
-            "last_name": "Dylan",
-            "email": "bob@cg-wire.com",
-            "phone": "+33 6 92 38 91 23",
-            "role": "client",
-            "name": "bob"
-        },
-        {
-            "first_name": "Frank",
-            "last_name": "Rousseau",
-            "email": "frank@cg-wire.com",
-            "phone": "+33 6 22 18 13 88",
-            "role": "admin",
-            "name": "frank"
+            "id": admin["id"],
+            "full_name": admin["full_name"],
+            "first_name": admin["first_name"],
+            "last_name": admin["last_name"],
         }
-    ]
-
-    for person in data:
-        personfull = gazu.person.new_person(
-            person["first_name"],
-            person["last_name"],
-            person["email"],
-            person["phone"],
-            person["role"],
-            "",
-            None,
-            "mysecretpassword"
-        )
-        gazu.person.set_avatar(personfull, "fixtures/fake_user/%s.png" % person["name"])
-        persons.append(personfull)
-        if person["role"] == "user" or person["role"] == "vendor":
-            artists.append(personfull)
+    )
+    persons.append(admin)
+ 
+    # --- Clients: two generic clients, not tied to a department ---
+    for _ in range(2):
+        _create_person("client")
+ 
+    # --- Departments: supervisor + manager + vendors + artists per department ---
+    departments = gazu.person.all_departments()
+ 
+    if not departments:
+        print("No departments found, skipping department staffing.")
+        return persons, artists
+ 
+    for department in departments:
+        # 1 supervisor, 1 manager (producer) per department
+        _create_person("supervisor", department)
+        _create_person("manager", department)
+ 
+        remaining = max(n_per_department - 2, 0)
+        n_vendors = math.floor(remaining * 0.2)
+        n_artists = remaining - n_vendors
+ 
+        for _ in range(n_vendors):
+            _create_person("vendor", department)
+ 
+        for _ in range(n_artists):
+            _create_person("user", department)
+ 
+    return persons, artists
 
 def generateProductions(size):
     for i in range(size):
@@ -629,21 +677,20 @@ def generateBudget():
         project = projects[i]
         budget = gazu.project.create_budget(project, "Production Budget", "Labor, hardware, and license costs.", "USD", PROJECT_START, PROJECT_START + timedelta(days=180), 2000000)
 
-        dep = gazu.person.get_department_by_name("Animation")
-
         for i in range(len(persons)):
-            person = persons[i]
-
-            gazu.client.post(f"data/projects/{project['id']}/budgets/{budget['id']}/entries", {
-                "budget_id": budget['id'],
-                "department_id": dep['id'],
-                "person_id": person['id'],
-                "start_date": "2026-06-01",
-                "months_duration": "1",
-                "daily_salary": "500",
-                "position": "artist",
-                "seniority": "mid",
-            })
+            person = gazu.person.get_person(persons[i]["id"], relations = True)
+            
+            if 'departments' in person and len(person['departments']) > 0:
+                gazu.client.post(f"data/projects/{project['id']}/budgets/{budget['id']}/entries", {
+                    "budget_id": budget['id'],
+                    "department_id": person['departments'][0],
+                    "person_id": person['id'],
+                    "start_date": PROJECT_START,
+                    "months_duration": "6",
+                    "daily_salary": person["daily_salary"],
+                    "position": person["position"],
+                    "seniority": "mid",
+                })
 
 generatePeople()
 generateProductions(1)
