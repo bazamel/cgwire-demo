@@ -91,6 +91,7 @@ def _create_person(role, department=None):
     # gazu.person.set_avatar(person, "fixtures/fake_user/alicia.png")
     try:
         avatar_path = _download_avatar(person["id"])
+        gazu.person.set_avatar(person, avatar_path)
     except requests.RequestException as exc:
         print(f"Could not fetch avatar for {full_name}: {exc}")
     finally:
@@ -420,9 +421,35 @@ movie_file_paths_render = [
     "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH06.mp4",
 ]
 
+TASK_DEPARTMENT_MAP = {
+    "Storyboard": "Storyboard",
+    "Layout": "Layout",
+    "Animation": "Animation",
+    "Rendering": "Rendering",
+    "Compositing": "Compositing",
+}
+
+def get_artist_for_task(task_type):
+    department_name = TASK_DEPARTMENT_MAP.get(task_type["name"])
+
+    candidates = []
+    for artist in artists:
+        person = gazu.person.get_person(artist["id"], relations=True)
+
+        if "departments" not in person:
+            continue
+
+        for dept_id in person["departments"]:
+            dept = gazu.person.get_department(dept_id)
+            if dept["name"] == department_name:
+                candidates.append(artist)
+                break
+
+    return random.choice(candidates) if candidates else random.choice(artists)
+
 def generateTask(shot, task_type, task_status):
     task   = gazu.task.new_task(shot, task_type)
-    artist = random.choice(artists)
+    artist = get_artist_for_task(task_type)
 
     shot_offset = timedelta(days=_shot_index(shot["name"]) * SHOT_INTERVAL_DAYS)
 
@@ -697,6 +724,6 @@ generateProductions(1)
 generateAssets()
 generateEpisodes(1)
 generateSequences(1)
-generateShots(10)
+generateShots(50)
 generateTasks()
 generateBudget()
