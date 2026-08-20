@@ -1,21 +1,33 @@
 import os
 import math
 import random
-import gazu
-import requests
+import threading
 import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
 
-import random
-
+import gazu
+import requests
 from faker import Faker
+
 fake = Faker()
 
-gazu.set_host("http://localhost/api")
-gazu.log_in("admin@example.com", "mysecretpassword")
-
-AVATAR_API_URL = "https://i.pravatar.cc/300"  # random fake avatar per request
+# ── Configuration ─────────────────────────────────────────────────────────────
+HOST = "http://localhost/api"
+LOGIN = "admin@example.com"
 PASSWORD = "mysecretpassword"
+
+WORKERS = 12            # threads used for task/timesheet generation
+WITH_AVATARS = True     # set False to skip all avatar downloads
+WITH_PREVIEWS = True    # set False to skip preview uploads (big speed win)
+AVATAR_POOL_SIZE = 15   # avatars downloaded once and reused across persons
+
+AVATAR_API_URL = "https://i.pravatar.cc/300"
+MAX_DAILY_MINUTES = 720  # 12 hours
+# ──────────────────────────────────────────────────────────────────────────────
+
+gazu.set_host(HOST)
+gazu.log_in(LOGIN, PASSWORD)
 
 persons = []
 artists = []
@@ -26,36 +38,80 @@ shots = []
 assets = []
 tasks = []
 
+# Built once during generatePeople(); replaces the per-task API lookups that
+# used to dominate runtime.
+_artists_by_department: dict[str, list[dict]] = {}
+_person_department_id: dict[str, str] = {}
+
 # Tracks minutes already logged per (artist_id, date_str) across all tasks.
-# This ensures no artist ever exceeds 720 min (12 h) on a single calendar day,
-# even when they are assigned to multiple shots whose pipelines overlap.
+# Guarded by a lock because timesheets are generated from multiple threads.
 _artist_day_budget: dict[tuple[str, str], int] = {}
+_budget_lock = threading.Lock()
 
-MAX_DAILY_MINUTES = 720  # 12 hours
+_avatar_pool: list[str] = []
 
 
-def _download_avatar(seed):
-    """Download a random fake avatar image and return the local file path."""
-    response = requests.get(f"{AVATAR_API_URL}?u={seed}", timeout=10)
-    response.raise_for_status()
- 
-    tmp_file = tempfile.NamedTemporaryFile(
-        suffix=".png", prefix="avatar_", delete=False
-    )
-    tmp_file.write(response.content)
-    tmp_file.close()
-    return tmp_file.name
- 
- 
+# ── Thread-local Kitsu clients ────────────────────────────────────────────────
+# gazu's default client wraps a requests.Session, which is NOT safe to share
+# across threads. Each worker thread gets its own authenticated client.
+_local = threading.local()
+
+
+def client():
+    """Return this thread's authenticated KitsuClient."""
+    c = getattr(_local, "client", None)
+    if c is None:
+        c = gazu.client.create_client(HOST)
+        gazu.log_in(LOGIN, PASSWORD, client=c)
+        _local.client = c
+    return c
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _build_avatar_pool():
+    """Download a small pool of avatars once and reuse them for every person.
+
+    The original script hit pravatar.cc once per person over the public
+    internet, serially — by far the slowest part of person creation.
+    """
+    if not WITH_AVATARS:
+        return
+
+    for i in range(AVATAR_POOL_SIZE):
+        try:
+            response = requests.get(f"{AVATAR_API_URL}?u={i}", timeout=10)
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            print(f"Could not fetch avatar #{i}: {exc}")
+            continue
+
+        tmp_file = tempfile.NamedTemporaryFile(
+            suffix=".png", prefix="avatar_", delete=False
+        )
+        tmp_file.write(response.content)
+        tmp_file.close()
+        _avatar_pool.append(tmp_file.name)
+
+
+def _cleanup_avatar_pool():
+    for path in _avatar_pool:
+        if os.path.exists(path):
+            os.remove(path)
+    _avatar_pool.clear()
+
+
 def _create_person(role, department=None):
     """Generate a fake person, create it in Kitsu, set its avatar, and
     optionally attach it to a department."""
     first_name = fake.first_name()
     last_name = fake.last_name()
     full_name = f"{first_name} {last_name}"
-    email = f"{first_name.lower()}.{last_name.lower()}.{fake.unique.random_int(min=1000, max=99999)}@cg-wire.com"
+    email = (
+        f"{first_name.lower()}.{last_name.lower()}."
+        f"{fake.unique.random_int(min=1000, max=99999)}@cg-wire.com"
+    )
     phone = "+33 6 82 38 19 08"
- 
+
     try:
         person = gazu.person.new_person(
             first_name,
@@ -64,18 +120,13 @@ def _create_person(role, department=None):
             phone,
             role,
             "",
-            None,
+            [department] if department is not None else None,
             PASSWORD,
+            contract_type="freelance" if role == "vendor" else "open-ended",
         )
 
-        person['position'] = "artist"
-        person['daily_salary'] = "500"
-
-        if role == 'supervisor' or role == "manager":
-            person['position'] = "lead"
-
-        if role == 'vendor':
-            person['contract_type'] = 'freelance'
+        person["position"] = "lead" if role in ("supervisor", "manager") else "artist"
+        person["daily_salary"] = "500"
 
         person = gazu.person.update_person(person)
 
@@ -86,36 +137,29 @@ def _create_person(role, department=None):
         message = exc.args[1] if len(exc.args) > 1 else str(exc)
         print(f"Skipping {full_name} <{email}>: server rejected payload: {message}")
         return None
- 
-    avatar_path = None
-    # gazu.person.set_avatar(person, "fixtures/fake_user/alicia.png")
-    try:
-        avatar_path = _download_avatar(person["id"])
-        gazu.person.set_avatar(person, avatar_path)
-    except requests.RequestException as exc:
-        print(f"Could not fetch avatar for {full_name}: {exc}")
-    finally:
-        if avatar_path and os.path.exists(avatar_path):
-            os.remove(avatar_path)
- 
-    if department is not None:
+
+    if _avatar_pool:
         try:
-            gazu.person.add_person_to_department(person, department)
+            gazu.person.set_avatar(person, random.choice(_avatar_pool))
         except Exception as exc:
-            print(
-                f"Could not add {full_name} to department "
-                f"{department.get('name', department)}: {exc}"
-            )
- 
+            print(f"Could not set avatar for {full_name}: {exc}")
+
+    # Remember the department locally so we never have to ask the server again.
+    if department is not None:
+        _person_department_id[person["id"]] = department["id"]
+        if role in ("user", "vendor"):
+            _artists_by_department.setdefault(department["name"], []).append(person)
+
     persons.append(person)
     if role in ("user", "vendor"):
         artists.append(person)
- 
+
     return person
+
 
 def generatePeople(n_per_department=10):
     """Generate fake people for the studio.
- 
+
     - Kitsu stays the single admin user.
     - Two generic clients are created.
     - For each existing department, `n_per_department` people are created:
@@ -124,15 +168,17 @@ def generatePeople(n_per_department=10):
         * 20% of the remaining headcount as vendors
         * the rest as artists ("user" role), assigned to that department
     """
+    _build_avatar_pool()
+
     # --- Admin: keep Kitsu as the one and only admin user ---
-    admin = gazu.person.get_person_by_email("admin@example.com")
- 
+    admin = gazu.person.get_person_by_email(LOGIN)
+
     gazu.person.set_avatar(admin, "fixtures/fake_user/kitsu.png")
- 
+
     admin["first_name"] = "Kitsu"
     admin["last_name"] = ""
     admin["full_name"] = "Kitsu"
- 
+
     gazu.person.update_person(
         {
             "id": admin["id"],
@@ -142,38 +188,42 @@ def generatePeople(n_per_department=10):
         }
     )
     persons.append(admin)
- 
+
     # --- Clients: two generic clients, not tied to a department ---
     for _ in range(2):
         _create_person("client")
- 
+
     # --- Departments: supervisor + manager + vendors + artists per department ---
     departments = gazu.person.all_departments()
- 
+
     if not departments:
         print("No departments found, skipping department staffing.")
         return persons, artists
- 
+
     for department in departments:
         # 1 supervisor, 1 manager (producer) per department
         _create_person("supervisor", department)
         _create_person("manager", department)
- 
+
         remaining = max(n_per_department - 2, 0)
         n_vendors = math.floor(remaining * 0.2)
         n_artists = remaining - n_vendors
- 
+
         for _ in range(n_vendors):
             _create_person("vendor", department)
- 
+
         for _ in range(n_artists):
             _create_person("user", department)
- 
+
     return persons, artists
+
 
 def generateProductions(size):
     for i in range(size):
-        projects.append(gazu.project.new_project(fake.name(), production_type="tvshow"))
+        projects.append(
+            gazu.project.new_project(fake.name(), production_type="tvshow")
+        )
+
 
 def generateAssets():
     characters = gazu.asset.new_asset_type("Characters")
@@ -194,15 +244,14 @@ def generateAssets():
         (props, "Berry"),
         (props, "Flower"),
         (props, "Mine Cart"),
-        (props, "Train")
+        (props, "Train"),
     ]
 
     for (asset_type, asset_name) in asset_desc:
         for i in range(len(projects)):
             project = projects[i]
-            assets.append(
-                gazu.asset.new_asset(project, asset_type, asset_name)
-            )
+            assets.append(gazu.asset.new_asset(project, asset_type, asset_name))
+
 
 def generateEpisodes(size):
     for i in range(len(projects)):
@@ -211,22 +260,33 @@ def generateEpisodes(size):
         for i in range(size):
             episodes.append(gazu.shot.new_episode(project, f"E{i:05d}"))
 
+
 def generateSequences(size):
     for i in range(len(episodes)):
         episode = episodes[i]
 
         for i in range(size):
-            sequences.append(gazu.shot.new_sequence(
-            episode["project_id"], f"SQ{i:05d}", episode=episode))
+            sequences.append(
+                gazu.shot.new_sequence(
+                    episode["project_id"], f"SQ{i:05d}", episode=episode
+                )
+            )
+
 
 def generateShots(size):
     for i in range(len(sequences)):
         sequence = sequences[i]
 
         for i in range(size):
-            shots.append(gazu.shot.new_shot(
-            sequence["project_id"], sequence, f"SH{i:05d}",
-                    nb_frames=random.randrange(20, 90, 1)))
+            shots.append(
+                gazu.shot.new_shot(
+                    sequence["project_id"],
+                    sequence,
+                    f"SH{i:05d}",
+                    nb_frames=random.randrange(20, 90, 1),
+                )
+            )
+
 
 TASK_SCHEDULE = {
     "Storyboard":   {"start_offset": 0,  "duration": 7},
@@ -246,19 +306,22 @@ month = now.month - 3
 year = now.year if month > 0 else now.year - 1
 month = month if month > 0 else month + 12
 
-PROJECT_START = datetime(year, month, now.day)
+# Clamp the day so e.g. "3 months before the 31st" never lands on a short month.
+_last_day = (datetime(year + (month == 12), (month % 12) + 1, 1) - timedelta(days=1)).day
+PROJECT_START = datetime(year, month, min(now.day, _last_day))
 
 done = gazu.task.get_task_status_by_name("Done")
 retake = gazu.task.get_task_status_by_name("Retake")
-wfa  = gazu.task.get_task_status_by_name("Waiting For Approval")
-wip  = gazu.task.get_task_status_by_name("Work In Progress")
+wfa = gazu.task.get_task_status_by_name("Waiting For Approval")
+wip = gazu.task.get_task_status_by_name("Work In Progress")
 todo = gazu.task.get_task_status_by_name("Todo")
+
 
 def _task_datetime(start: datetime, due: datetime, fraction: float, jitter_minutes: int = 120) -> str:
     """
     Returns an ISO-8601 datetime string at `fraction` of the way through
     the task window, plus a small random offset.
-    
+
     fraction: 0.0 = start_date, 1.0 = due_date
     jitter_minutes: max random offset applied after the fractional point
     """
@@ -279,6 +342,7 @@ def _shot_index(shot_name: str) -> int:
     except (ValueError, IndexError):
         return 0
 
+
 file_paths_modeling = [
     "fixtures/th_assets/lama.png",
     "fixtures/th_assets/ep01/oti.png",
@@ -296,129 +360,31 @@ file_paths_modeling = [
 ]
 
 file_paths_sb = [
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH01.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH02.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH03.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH04.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH05.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH06.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH07.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH08.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH09.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH10.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE01_SH11.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH01.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH02.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH03.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH04.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH05.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH06.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH07.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH08.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH09.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH10.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE02_SH11.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH01.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH02.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH03.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH04.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH05.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH06.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH07.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH08.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH09.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH10.png",
-    "fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE03_SH11.png",
+    f"fixtures/th_shots/ep01/SB/caminandes_llamigos_E01_SE{se:02d}_SH{sh:02d}.png"
+    for se in range(1, 4)
+    for sh in range(1, 12)
 ]
 
 file_paths_animation = [
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH01.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH02.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH03.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH04.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH05.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH06.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH07.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH08.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH09.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH10.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH11.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH01.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH02.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH03.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH04.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH05.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH06.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH07.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH08.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH09.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH10.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE02_SH11.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH01.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH02.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH03.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH04.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH05.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH06.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH07.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH08.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH09.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH10.png",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE03_SH11.png",
+    f"fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE{se:02d}_SH{sh:02d}.png"
+    for se in range(1, 4)
+    for sh in range(1, 12)
 ]
 
 file_paths_render = [
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH01.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH02.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH03.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH04.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH05.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH06.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH07.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH08.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH09.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH10.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH11.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH01.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH02.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH03.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH04.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH05.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH06.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH07.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH08.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH09.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH10.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE02_SH11.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH01.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH02.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH03.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH04.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH05.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH06.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH07.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH08.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH09.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH10.png",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE03_SH11.png",
+    f"fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE{se:02d}_SH{sh:02d}.png"
+    for se in range(1, 4)
+    for sh in range(1, 12)
 ]
 
 movie_file_paths_animation = [
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH01.mp4",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH02.mp4",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH03.mp4",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH04.mp4",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH05.mp4",
-    "fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH06.mp4",
+    f"fixtures/th_shots/ep01/Anim/caminandes_llamigos_E01_SE01_SH{sh:02d}.mp4"
+    for sh in range(1, 7)
 ]
 
 movie_file_paths_render = [
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH01.mp4",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH02.mp4",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH03.mp4",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH04.mp4",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH05.mp4",
-    "fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH06.mp4",
+    f"fixtures/th_shots/ep01/render/caminandes_llamigos_E01_SE01_SH{sh:02d}.mp4"
+    for sh in range(1, 7)
 ]
 
 TASK_DEPARTMENT_MAP = {
@@ -429,66 +395,58 @@ TASK_DEPARTMENT_MAP = {
     "Compositing": "Compositing",
 }
 
+
 def get_artist_for_task(task_type):
+    """Pick an artist from the pre-built department index.
+
+    This used to issue one `get_person(relations=True)` per artist plus one
+    `get_department()` per department id, on every single task — roughly
+    24,000 HTTP requests for a 250-task run. It is now a dict lookup.
+    """
     department_name = TASK_DEPARTMENT_MAP.get(task_type["name"])
-
-    candidates = []
-    for artist in artists:
-        person = gazu.person.get_person(artist["id"], relations=True)
-
-        if "departments" not in person:
-            continue
-
-        for dept_id in person["departments"]:
-            dept = gazu.person.get_department(dept_id)
-            if dept["name"] == department_name:
-                candidates.append(artist)
-                break
-
+    candidates = _artists_by_department.get(department_name)
     return random.choice(candidates) if candidates else random.choice(artists)
 
-def generateTask(shot, task_type, task_status):
-    task   = gazu.task.new_task(shot, task_type)
+
+def generateTask(shot, task_type, task_status, c):
     artist = get_artist_for_task(task_type)
+
+    # Assign at creation time instead of a follow-up PUT to /actions/.../assign.
+    task = gazu.task.new_task(
+        shot, task_type, assignees=[artist["id"]], client=c
+    )
 
     shot_offset = timedelta(days=_shot_index(shot["name"]) * SHOT_INTERVAL_DAYS)
 
     schedule = TASK_SCHEDULE.get(task_type["name"])
     if schedule:
         start = PROJECT_START + shot_offset + timedelta(days=schedule["start_offset"])
-        due   = start + timedelta(days=schedule["duration"])
+        due = start + timedelta(days=schedule["duration"])
         task["start_date"] = start.strftime("%Y-%m-%d")
         task["real_start_date"] = task["start_date"]
-        task["due_date"]   = due.strftime("%Y-%m-%d")
-        task["created_at"]   = start.strftime("%Y-%m-%d")
-        task["updated_at"]   = due.strftime("%Y-%m-%d")
-        task["last_comment_date"]   = due.strftime("%Y-%m-%d")
-        task["estimation"] = schedule["duration"] * 480 
+        task["due_date"] = due.strftime("%Y-%m-%d")
+        task["created_at"] = start.strftime("%Y-%m-%d")
+        task["updated_at"] = due.strftime("%Y-%m-%d")
+        task["last_comment_date"] = due.strftime("%Y-%m-%d")
+        task["estimation"] = schedule["duration"] * 480
 
-        gazu.task.update_task(task)
+        gazu.task.update_task(task, client=c)
     else:
         start = PROJECT_START + shot_offset
-        due   = start + timedelta(days=30)
-    
-    gazu.client.put(
-        f"/actions/persons/{artist['id']}/assign",
-        {"task_ids": [task["id"]]}  # note: list, not bare string
-    )
+        due = start + timedelta(days=30)
 
     # ── Timesheet generation ──────────────────────────────────────────────────
-    _generate_timesheets(task, artist, start, due)
+    _generate_timesheets(task, artist, start, due, c)
     # ─────────────────────────────────────────────────────────────────────────
 
     timestamp = _task_datetime(start, due, 0.0, jitter_minutes=60)
 
     # All tasks start at TODO
     comment = gazu.task.add_comment(
-        task, todo, "Task created",
-        created_at=timestamp,
-        # updated_at=timestamp,
+        task, todo, "Task created", created_at=timestamp, client=c
     )
     comment["updated_at"] = timestamp
-    gazu.task.update_comment(comment)
+    gazu.task.update_comment(comment, client=c)
 
     if task_status == todo:
         return
@@ -496,12 +454,10 @@ def generateTask(shot, task_type, task_status):
     timestamp = _task_datetime(start, due, 0.25, jitter_minutes=120)
     # TODO → WIP
     comment = gazu.task.add_comment(
-        task, wip, "Started work",
-        created_at=timestamp,
-        # updated_at=timestamp,
+        task, wip, "Started work", created_at=timestamp, client=c
     )
     comment["updated_at"] = timestamp
-    gazu.task.update_comment(comment)
+    gazu.task.update_comment(comment, client=c)
 
     if task_status == wip:
         return
@@ -511,39 +467,36 @@ def generateTask(shot, task_type, task_status):
     shot_index = _shot_index(shot["name"])
     preview_path = None
 
-    # if task_name == "Modeling":
-    #     preview_path = file_paths_modeling[shot_index % len(file_paths_modeling)]
-    if task_name == "Storyboard":
-        preview_path = file_paths_sb[shot_index % len(file_paths_sb)]
-    elif task_name == "Animation":
-        movie_paths = movie_file_paths_animation
-        still_paths = file_paths_animation
-        if shot_index < len(movie_paths):
-            preview_path = movie_paths[shot_index]
-        else:
-            preview_path = still_paths[shot_index % len(still_paths)]
-    elif task_name == "Rendering":
-        movie_paths = movie_file_paths_render
-        still_paths = file_paths_render
-        if shot_index < len(movie_paths):
-            preview_path = movie_paths[shot_index]
-        else:
-            preview_path = still_paths[shot_index % len(still_paths)]
+    if WITH_PREVIEWS:
+        if task_name == "Storyboard":
+            preview_path = file_paths_sb[shot_index % len(file_paths_sb)]
+        elif task_name == "Animation":
+            movie_paths = movie_file_paths_animation
+            still_paths = file_paths_animation
+            if shot_index < len(movie_paths):
+                preview_path = movie_paths[shot_index]
+            else:
+                preview_path = still_paths[shot_index % len(still_paths)]
+        elif task_name == "Rendering":
+            movie_paths = movie_file_paths_render
+            still_paths = file_paths_render
+            if shot_index < len(movie_paths):
+                preview_path = movie_paths[shot_index]
+            else:
+                preview_path = still_paths[shot_index % len(still_paths)]
     # ─────────────────────────────────────────────────────────────────────────
 
     timestamp = _task_datetime(start, due, 0.75, jitter_minutes=120)
     # WIP → WFA
     wfa_comment = gazu.task.add_comment(
-        task, wfa, "Ready for approval",
-        created_at=timestamp,
-        # updated_at=timestamp,
+        task, wfa, "Ready for approval", created_at=timestamp, client=c
     )
     wfa_comment["updated_at"] = timestamp
-    gazu.task.update_comment(wfa_comment)
+    gazu.task.update_comment(wfa_comment, client=c)
 
     if preview_path:
-        preview_file = gazu.task.add_preview(task, wfa_comment, preview_path)
-        gazu.task.set_main_preview(preview_file)
+        preview_file = gazu.task.add_preview(task, wfa_comment, preview_path, client=c)
+        gazu.task.set_main_preview(preview_file, client=c)
 
     if task_status == wfa:
         return
@@ -552,29 +505,26 @@ def generateTask(shot, task_type, task_status):
     # WFA → Retake  ← frontier is retake, stop here
     if task_status == retake:
         comment = gazu.task.add_comment(
-            task, retake, "Changes requested",
-            created_at=timestamp,
-            # updated_at=timestamp,
+            task, retake, "Changes requested", created_at=timestamp, client=c
         )
         comment["updated_at"] = timestamp
-        gazu.task.update_comment(comment)
+        gazu.task.update_comment(comment, client=c)
         return
 
     timestamp = _task_datetime(start, due, 1.0, jitter_minutes=0)
     # WFA → Done
     comment = gazu.task.add_comment(
-        task, done, "Approved",
-        created_at=timestamp,
-        # updated_at=timestamp,
+        task, done, "Approved", created_at=timestamp, client=c
     )
     comment["updated_at"] = timestamp
-    gazu.task.update_comment(comment)
-    task = gazu.task.get_task(task['id'])
-    task['done_date'] = timestamp
-    gazu.task.update_task(task)
+    gazu.task.update_comment(comment, client=c)
+
+    # No re-fetch needed: `task` is already the current representation.
+    task["done_date"] = timestamp
+    gazu.task.update_task(task, client=c)
 
 
-def _generate_timesheets(task, artist, start: datetime, due: datetime) -> None:
+def _generate_timesheets(task, artist, start: datetime, due: datetime, c) -> None:
     """
     Log daily timesheets for *artist* on *task* between start and due.
 
@@ -595,7 +545,6 @@ def _generate_timesheets(task, artist, start: datetime, due: datetime) -> None:
     # Expand the working window for late tasks
     actual_end = due
     if is_late:
-        extra_days = 0
         added = 0
         target_extra = random.randint(1, 5)          # 1-5 extra working days
         cursor = due + timedelta(days=1)
@@ -619,16 +568,8 @@ def _generate_timesheets(task, artist, start: datetime, due: datetime) -> None:
     artist_id = artist["id"]
 
     for work_date in working_days:
-        date_str = work_date.strftime("%Y-%m-%d") if isinstance(work_date, datetime) else work_date.strftime("%Y-%m-%d")
+        date_str = work_date.strftime("%Y-%m-%d")
         budget_key = (artist_id, date_str)
-
-        # How many minutes has this artist already logged today (across all tasks)?
-        already_logged = _artist_day_budget.get(budget_key, 0)
-        remaining_budget = MAX_DAILY_MINUTES - already_logged
-
-        if remaining_budget <= 0:
-            # Artist is fully booked for this day — skip entirely.
-            continue
 
         is_crunch = random.random() < 0.10
 
@@ -640,26 +581,28 @@ def _generate_timesheets(task, artist, start: datetime, due: datetime) -> None:
             raw = random.gauss(mu=420, sigma=40)     # mean 7 h, σ 40 min
             desired = int(max(360, min(480, raw)))   # clamp to [6 h, 8 h]
 
-        # Clamp to whatever budget is left for this artist today.
-        duration = min(desired, remaining_budget)
+        # Reserve the minutes atomically: read-modify-write must be a single
+        # critical section or concurrent tasks would both see the same
+        # "remaining" figure and push the artist past MAX_DAILY_MINUTES.
+        with _budget_lock:
+            already_logged = _artist_day_budget.get(budget_key, 0)
+            remaining_budget = MAX_DAILY_MINUTES - already_logged
+            if remaining_budget <= 0:
+                # Artist is fully booked for this day — skip entirely.
+                continue
+            duration = min(desired, remaining_budget)
+            _artist_day_budget[budget_key] = already_logged + duration
 
-        gazu.task.set_time_spent(
-            task,
-            artist,
-            date_str,
-            duration,
-        )
+        gazu.task.set_time_spent(task, artist, date_str, duration, client=c)
 
-        # Update the shared daily budget.
-        _artist_day_budget[budget_key] = already_logged + duration
 
-        
 # Replace the random status logic with a cascading pipeline status.
 # Each shot gets one "frontier" stage (the currently-active one); stages before
 # it are Done, the frontier stage itself gets a random in-progress status
 # (wip / wfa / retake), and stages after it are Todo.
 
 PIPELINE_ORDER = ["Storyboard", "Layout", "Animation", "Rendering", "Compositing"]
+
 
 def _shot_status_cascade(shot):
     """
@@ -668,10 +611,7 @@ def _shot_status_cascade(shot):
     is randomly wip/wfa (10% retake), everything after is Todo.
     """
     frontier_idx = random.randint(0, len(PIPELINE_ORDER) - 1)
-    frontier_status = random.choices(
-        [wip, wfa, retake],
-        weights=[50, 40, 10]
-    )[0]
+    frontier_status = random.choices([wip, wfa, retake], weights=[50, 40, 10])[0]
 
     statuses = {}
     for i, name in enumerate(PIPELINE_ORDER):
@@ -684,46 +624,87 @@ def _shot_status_cascade(shot):
     return statuses
 
 
+def _do_shot(shot, task_types):
+    """Generate the whole pipeline for one shot, on this thread's client."""
+    c = client()
+    cascade = _shot_status_cascade(shot)
+    for task_type in task_types:
+        generateTask(shot, task_type, cascade[task_type["name"]], c)
+
+
 def generateTasks():
-    storyboard  = gazu.task.get_task_type_by_name("Storyboard")
-    layout      = gazu.task.get_task_type_by_name("Layout")
-    animation   = gazu.task.get_task_type_by_name("Animation")
-    render      = gazu.task.get_task_type_by_name("Rendering")
+    storyboard = gazu.task.get_task_type_by_name("Storyboard")
+    layout = gazu.task.get_task_type_by_name("Layout")
+    animation = gazu.task.get_task_type_by_name("Animation")
+    render = gazu.task.get_task_type_by_name("Rendering")
     compositing = gazu.task.get_task_type_by_name("Compositing")
 
     task_types = [storyboard, layout, animation, render, compositing]
 
-    for shot in shots:
-        cascade = _shot_status_cascade(shot)
-        for task_type in task_types:
-            status = cascade[task_type["name"]]
-            generateTask(shot, task_type, status)
+    # Shots are independent of one another, so they parallelize cleanly.
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        futures = {pool.submit(_do_shot, shot, task_types): shot for shot in shots}
+        for i, future in enumerate(as_completed(futures), 1):
+            shot = futures[future]
+            try:
+                future.result()
+            except Exception as exc:
+                print(f"Shot {shot['name']} failed: {exc}")
+            if i % 10 == 0 or i == len(shots):
+                print(f"  … {i}/{len(shots)} shots done")
+
 
 def generateBudget():
     for i in range(len(projects)):
         project = projects[i]
-        budget = gazu.project.create_budget(project, "Production Budget", "Labor, hardware, and license costs.", "USD", PROJECT_START, PROJECT_START + timedelta(days=180), 2000000)
+        budget = gazu.project.create_budget(
+            project,
+            "Production Budget",
+            "Labor, hardware, and license costs.",
+            "USD",
+            PROJECT_START,
+            PROJECT_START + timedelta(days=180),
+            2000000,
+        )
 
-        for i in range(len(persons)):
-            person = gazu.person.get_person(persons[i]["id"], relations = True)
-            
-            if 'departments' in person and len(person['departments']) > 0:
-                gazu.client.post(f"data/projects/{project['id']}/budgets/{budget['id']}/entries", {
-                    "budget_id": budget['id'],
-                    "department_id": person['departments'][0],
-                    "person_id": person['id'],
+        # Department ids were captured at creation time, so no per-person
+        # get_person(relations=True) round-trip is needed here.
+        for person in persons:
+            department_id = _person_department_id.get(person["id"])
+            if not department_id:
+                continue
+
+            gazu.client.post(
+                f"data/projects/{project['id']}/budgets/{budget['id']}/entries",
+                {
+                    "budget_id": budget["id"],
+                    "department_id": department_id,
+                    "person_id": person["id"],
                     "start_date": PROJECT_START,
                     "months_duration": "6",
-                    "daily_salary": person["daily_salary"],
-                    "position": person["position"],
+                    "daily_salary": person.get("daily_salary", "500"),
+                    "position": person.get("position", "artist"),
                     "seniority": "mid",
-                })
+                },
+            )
 
-generatePeople()
-generateProductions(1)
-generateAssets()
-generateEpisodes(1)
-generateSequences(1)
-generateShots(50)
-generateTasks()
-generateBudget()
+
+if __name__ == "__main__":
+    started = datetime.now()
+    try:
+        print("Generating people…")
+        generatePeople()
+        print("Generating productions…")
+        generateProductions(1)
+        generateAssets()
+        generateEpisodes(1)
+        generateSequences(1)
+        generateShots(50)
+        print(f"Generating tasks for {len(shots)} shots on {WORKERS} threads…")
+        generateTasks()
+        print("Generating budget…")
+        generateBudget()
+    finally:
+        _cleanup_avatar_pool()
+
+    print(f"Done in {datetime.now() - started}.")
